@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Ultra-Fast Invoice Extractor</title>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
+<style>
+body {
+  font-family: Arial, sans-serif;
+  margin: 20px;
+}
+.controls {
+  margin-bottom: 20px;
+}
+textarea {
+  width: 100%;
+  max-width: 500px;
+  height: 120px;
+  padding: 8px;
+  font-family: monospace;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-top: 15px;
+}
+th, td {
+  border: 1px solid #ccc;
+  padding: 8px;
+  text-align: left;
+}
+th {
+  background-color: #f4f4f4;
+}
+.progress {
+  font-weight: bold;
+  color: #28a745;
+  margin-top: 5px;
+}
+</style>
+</head>
+
+<body>
+
+<h2>Ultra-Fast Invoice Extractor</h2>
+
+<div class="controls">
+  <label for="invoiceList"><strong>Enter Required Bill/Invoice Numbers:</strong></label><br>
+  <textarea id="invoiceList" placeholder="e.g.&#10;2037955774&#10;INV2037955774"></textarea><br><br>
+  
+  <input type="file" id="pdfFiles" multiple accept=".pdf">
+  <button id="extractBtn" onclick="extractInvoices()">Extract Data</button>
+  <div id="statusText" class="progress"></div>
+</div>
+
+<table>
+<thead>
+<tr>
+<th>Bill Number</th>
+<th>Bill Issue Date</th>
+<th>Current Month Charges</th>
+<th>Status / Source File</th>
+</tr>
+</thead>
+<tbody id="results"></tbody>
+</table>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = 
+'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+async function readPdfFirstPage(file){
+  try {
+    const pdf = await pdfjsLib.getDocument({
+      data: await file.arrayBuffer()
+    }).promise;
+
+    const page = await pdf.getPage(1);
+    const content = await page.getTextContent();
+    
+    // Preserve layout order closely by joining with spaces
+    return content.items.map(x => x.str).join(" ");
+  } catch (err) {
+    return "";
+  }
+}
+
+async function extractInvoices(){
+  const fileInput = document.getElementById('pdfFiles');
+  const files = Array.from(fileInput.files);
+  const results = document.getElementById('results');
+  const statusText = document.getElementById('statusText');
+  const rawInput = document.getElementById('invoiceList').value;
+  const btn = document.getElementById('extractBtn');
+
+  const targetInvoices = rawInput
+    .split(/[\n,\s]+/)
+    .map(inv => inv.trim())
+    .filter(inv => inv.length > 0);
+
+  if (targetInvoices.length === 0) {
+    alert("Please enter at least one invoice number.");
+    return;
+  }
+
+  if (files.length === 0) {
+    alert("Please upload your PDF files.");
+    return;
+  }
+
+  btn.disabled = true;
+  results.innerHTML = '';
+  statusText.innerText = `Indexing ${files.length} filenames...`;
+
+  // Pre-index files for fast lookup
+  const fileMap = new Map();
+  for (const file of files) {
+    fileMap.set(file.name.toLowerCase(), file);
+  }
+
+  statusText.innerText = `Extracting requested data...`;
+
+  for (const targetInv of targetInvoices) {
+    const cleanNum = targetInv.replace(/^[A-Za-z]+/, ''); // Strips "INV" if needed
+    
+    let matchedFile = null;
+    for (const [fileName, fileObj] of fileMap.entries()) {
+      if (fileName.includes(targetInv.toLowerCase()) || fileName.includes(cleanNum.toLowerCase())) {
+        matchedFile = fileObj;
+        break;
+      }
+    }
+
+    if (matchedFile) {
+      const text = await readPdfFirstPage(matchedFile);
+
+      // Improved Robust Matchers:
+      // 1. Bill Issue Date (e.g. 01 Jul 2026 or 01-07-2026)
+      const dateMatch = text.match(/Bill\s*Issue\s*Date\s*[:|]?\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{2}[\/\-]\d{2}[\/\-]\d{4})/i);
+
+      // 2. Amount: Matches "Current month charges" followed by any characters until a decimal currency amount
+      const amountMatch = text.match(/Current\s*month\s*charges[\s\S]*?([\d,]+\.\d{2})/i) 
+                       || text.match(/TAXINVOICE[\s\S]*?([\d,]+\.\d{2})\s*AED/i);
+
+      const date = dateMatch ? dateMatch[1] : 'Not Found';
+      const amount = amountMatch ? amountMatch[1] : 'Not Found';
+
+      results.innerHTML += `
+      <tr>
+        <td><strong>${targetInv}</strong></td>
+        <td>${date}</td>
+        <td>${amount}</td>
+        <td>${matchedFile.name}</td>
+      </tr>`;
+    } else {
+      results.innerHTML += `
+      <tr style="color: red;">
+        <td><strong>${targetInv}</strong></td>
+        <td>N/A</td>
+        <td>N/A</td>
+        <td>File not found in selection</td>
+      </tr>`;
+    }
+  }
+
+  statusText.innerText = `Done!`;
+  btn.disabled = false;
+}
+</script>
+
+</body>
+</html>
