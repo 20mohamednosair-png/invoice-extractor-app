@@ -1,244 +1,189 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SAP Telecom Upload Generator</title>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsxfull.min.js
+<!-- FIX 1: Properly formatted script tag with protocol -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
 <style>
-body{
+body {
     font-family: Arial, sans-serif;
-    background:#f4f6f9;
-    padding:40px;
+    margin: 30px;
 }
 
-.container{
-    max-width:1000px;
-    margin:auto;
-    background:white;
-    padding:30px;
-    border-radius:10px;
-    box-shadow:0 0 15px rgba(0,0,0,.15);
+input, button {
+    margin: 10px;
+    padding: 10px;
 }
 
-h1{
-    color:#0078d4;
+button {
+    background: #0078d4;
+    color: white;
+    border: none;
+    cursor: pointer;
 }
 
-label{
-    display:block;
-    margin-top:20px;
-    margin-bottom:5px;
-    font-weight:bold;
-}
-
-input{
-    width:100%;
-    padding:10px;
-}
-
-button{
-    margin-top:25px;
-    width:100%;
-    padding:15px;
-    background:#0078d4;
-    color:white;
-    border:none;
-    cursor:pointer;
-    font-size:18px;
-    border-radius:5px;
-}
-
-button:hover{
-    background:#005fa3;
-}
-
-#status{
-    margin-top:20px;
-    font-weight:bold;
-    color:#0078d4;
+button:hover {
+    background: #005ea6;
 }
 </style>
 </head>
 
 <body>
 
-<div class="container">
+<h2>SAP Telecom Upload Generator</h2>
 
-<h1>SAP Telecom Upload Generator</h1>
+<p>Etisalat Excel:</p>
+<input type="file" id="etisalatFile">
 
-<label>Etisalat Excel File</label>
-<input type="file" id="etisalatFile" accept=".xlsx,.xls">
+<p>Store Master:</p>
+<input type="file" id="storeFile">
 
-<label>Store Mapping File</label>
-<input type="file" id="storeFile" accept=".xlsx,.xls">
-
-<label>Posting Date</label>
+<p>Posting Date:</p>
 <input type="date" id="postingDate">
 
-<button onclick="generateSAPUpload()">
+<br>
+
+<button onclick="generateSAP()">
 Generate SAP Upload
 </button>
 
-<div id="status"></div>
-
-</div>
-
 <script>
 
-function createCostCenter(storeCode){
-
-    let code = String(storeCode).trim();
-
-    if(code.length < 4){
-        code = code.padStart(4,"0");
+function excelDateToJS(dateValue) {
+    if (typeof dateValue === "number") {
+        const date = XLSX.SSF.parse_date_code(dateValue);
+        return new Date(date.y, date.m - 1, date.d);
     }
-
-    return "AE" + code + "610";
+    return new Date(dateValue);
 }
 
-function formatDate(dateValue){
-
-    if(!dateValue) return "";
-
-    let dt = new Date(dateValue);
-
-    if(isNaN(dt)){
-        return dateValue;
-    }
-
-    let mm = String(dt.getMonth()+1).padStart(2,"0");
-    let dd = String(dt.getDate()).padStart(2,"0");
-    let yyyy = dt.getFullYear();
-
-    return `${mm}/${dd}/${yyyy}`;
+function formatDateSAP(date) {
+    if (isNaN(date.getTime())) return "";
+    let d = String(date.getDate()).padStart(2, "0");
+    let m = String(date.getMonth() + 1).padStart(2, "0");
+    let y = date.getFullYear();
+    return `${m}/${d}/${y}`;
 }
 
-function round2(v){
-    return Number(v).toFixed(2);
+function createCostCenter(storeCode) {
+    storeCode = String(storeCode);
+    if (storeCode.length < 4) {
+        storeCode = storeCode.padStart(4, "0");
+    }
+    return "AE" + storeCode + "610";
 }
 
-async function generateSAPUpload(){
+async function generateSAP() {
+    try {
+        const etisalatFile = document.getElementById("etisalatFile").files[0];
+        const storeFile = document.getElementById("storeFile").files[0];
+        const postingDate = document.getElementById("postingDate").value;
 
-try{
-
-    document.getElementById("status").innerHTML =
-    "Reading files...";
-
-    const etFile =
-    document.getElementById("etisalatFile").files[0];
-
-    const storeFile =
-    document.getElementById("storeFile").files[0];
-
-    const postingDate =
-    document.getElementById("postingDate").value;
-
-    if(!etFile){
-        alert("Select Etisalat file");
-        return;
-    }
-
-    if(!storeFile){
-        alert("Select Store file");
-        return;
-    }
-
-    const etWorkbook =
-    XLSX.read(await etFile.arrayBuffer(),
-    {type:"array"});
-
-    const storeWorkbook =
-    XLSX.read(await storeFile.arrayBuffer(),
-    {type:"array"});
-
-    const etSheet =
-    etWorkbook.Sheets[etWorkbook.SheetNames[1]];
-
-    const storeSheet =
-    storeWorkbook.Sheets[storeWorkbook.SheetNames[0]];
-
-    const etData =
-    XLSX.utils.sheet_to_json(etSheet);
-
-    const storeData =
-    XLSX.utils.sheet_to_json(storeSheet);
-
-    let stores = [];
-
-    storeData.forEach(row=>{
-
-        stores.push({
-            name:String(row["Store"] || "")
-                     .toUpperCase()
-                     .trim(),
-            code:row["Store Code"]
-        });
-
-    });
-
-    let output = [];
-
-    etData.forEach(row=>{
-
-        let invoice =
-        row["Bill Number"];
-
-        let billDate =
-        row["Bill Date"];
-
-        let storeName =
-        String(row["Store"] || "")
-        .toUpperCase()
-        .trim();
-
-        let gross =
-        parseFloat(row["Current Month Charges"]);
-
-        if(!invoice || isNaN(gross)){
+        if (!etisalatFile || !storeFile) {
+            alert("Please upload both files");
             return;
         }
 
-        let net =
-        Number((gross/1.05).toFixed(2));
+        if (!postingDate) {
+            alert("Please select a posting date");
+            return;
+        }
 
-        let storeCode = "";
+        const etBuffer = await etisalatFile.arrayBuffer();
+        const stBuffer = await storeFile.arrayBuffer();
 
-        stores.forEach(s=>{
+        const etWB = XLSX.read(etBuffer, { type: "array" });
+        const stWB = XLSX.read(stBuffer, { type: "array" });
 
-            if(
-                storeName.includes(s.name) ||
-                s.name.includes(storeName)
-            ){
-                storeCode = s.code;
+        // FIX 2: Sheet index fallback (uses Sheet 2 if available, otherwise Sheet 1)
+        const etSheetName = etWB.SheetNames[1] || etWB.SheetNames[0];
+        const stSheetName = stWB.SheetNames[0];
+
+        const etData = XLSX.utils.sheet_to_json(etWB.Sheets[etSheetName]);
+        const storeData = XLSX.utils.sheet_to_json(stWB.Sheets[stSheetName]);
+
+        let storeMap = {};
+
+        storeData.forEach(r => {
+            if (r.Store) {
+                let storeName = String(r.Store)
+                    .replace(/^\d+\s+/, "")
+                    .trim()
+                    .toUpperCase();
+                storeMap[storeName] = r["Store Code"];
             }
-
         });
 
-        let costCenter =
-        storeCode
-        ? createCostCenter(storeCode)
-        : "";
+        let output = [];
 
-        output.push({
+        etData.forEach(row => {
+            let storeName = String(row.Store || "").trim().toUpperCase();
+            let billNo = row["Bill Number"];
+            let grossAmount = Number(row["Current Month Charges"] || 0);
 
-            "Invoice ID":"",
-            "Company Code":"AE03",
-            "Transaction":"1",
-            "Invoicing Party":"2000004275",
-            "Reference":invoice,
-            "Document Date":formatDate(billDate),
-            "Posting Date":formatDate(postingDate),
-            "Document Type":"KR",
-            "Document Header Text":"Telecom Voice",
-            "Currency":"AED",
-            "Gross Invoice Amount in Document Currency":
-            round2(gross),
-            "Business Place":"DXB",
-            "Payment Method":"W",
-            "Invoice Receipt Date":
-            formatDate(postingDate),
+            if (!billNo || grossAmount === 0) return;
 
-            "Account
+            let netAmount = Number((grossAmount / 1.05).toFixed(2));
+            let storeCode = storeMap[storeName];
+            let costCenter = storeCode ? createCostCenter(storeCode) : "";
+
+            let billDate = excelDateToJS(row["Bill Date"]);
+            let posting = new Date(postingDate);
+
+            let monthText = billDate.toLocaleDateString('en-US', {
+                month: 'short',
+                year: '2-digit'
+            }).replace(" ", "-");
+
+            let itemText = `Telecom Voice ${monthText} Inv`;
+
+            output.push({
+                "Invoice ID": "",
+                "Company Code": "AE03",
+                "Transaction": 1,
+                "Invoicing Party": "2000004275",
+                "Reference": billNo,
+                "Document Date": formatDateSAP(billDate),
+                "Posting Date": formatDateSAP(posting),
+                "Document Type": "KR",
+                "Document Header Text": itemText,
+                "Currency": "AED",
+                "Gross Invoice Amount": grossAmount.toFixed(2),
+                "Business Place": "DXB",
+                "Payment Method": "W",
+                "Invoice Receipt Date": formatDateSAP(posting),
+                "Account": "6117151004",
+                "Item Text": itemText,
+                "Debit Credit": "S",
+                "Amount in Document Currency": netAmount.toFixed(2),
+                "Tax Code": "IT",
+                "Cost Center": costCenter,
+                "Profit Center": "100005"
+            });
+        });
+
+        if (output.length === 0) {
+            alert("No matching rows found. Please check your column names in the Excel file.");
+            return;
+        }
+
+        const ws = XLSX.utils.json_to_sheet(output);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "SAP Upload");
+        XLSX.writeFile(wb, "SAP_Upload.xlsx");
+
+        alert(`Done! Generated ${output.length} rows`);
+
+    } catch (error) {
+        console.error(error);
+        alert("An error occurred: " + error.message);
+    }
+}
+
+</script>
+
+</body>
+</html>
