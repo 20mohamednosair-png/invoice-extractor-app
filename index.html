@@ -1,67 +1,150 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>SAP Telecom Upload Generator</title>
+<title>SAP Telecom PDF & Excel Generator</title>
 
-<!-- FIX 1: Properly formatted script tag with protocol -->
+<!-- SheetJS for Excel Reading/Writing -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+<!-- PDF.js for Client-Side PDF Parsing -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 
 <style>
 body {
-    font-family: Arial, sans-serif;
-    margin: 30px;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    margin: 40px;
+    background-color: #f8f9fa;
+    color: #333;
 }
 
-input, button {
-    margin: 10px;
+.container {
+    max-width: 800px;
+    margin: 0 auto;
+    background: #ffffff;
+    padding: 30px;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+}
+
+h2 {
+    color: #0078d4;
+    margin-top: 0;
+}
+
+.field-group {
+    margin-bottom: 20px;
+}
+
+label {
+    display: block;
+    font-weight: bold;
+    margin-bottom: 6px;
+}
+
+input[type="file"], input[type="date"] {
+    width: 100%;
     padding: 10px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-sizing: border-box;
 }
 
 button {
     background: #0078d4;
     color: white;
+    font-size: 16px;
+    font-weight: bold;
+    padding: 12px 24px;
     border: none;
+    border-radius: 4px;
     cursor: pointer;
+    width: 100%;
+    margin-top: 10px;
 }
 
 button:hover {
     background: #005ea6;
+}
+
+button:disabled {
+    background: #cccccc;
+    cursor: not-allowed;
+}
+
+.progress-box {
+    margin-top: 20px;
+    padding: 15px;
+    border-radius: 4px;
+    background: #e9ecef;
+    display: none;
+}
+
+.progress-bar-bg {
+    height: 12px;
+    background: #ced4da;
+    border-radius: 6px;
+    overflow: hidden;
+    margin-top: 8px;
+}
+
+.progress-bar-fill {
+    height: 100%;
+    background: #28a745;
+    width: 0%;
+    transition: width 0.2s;
+}
+
+#statusText {
+    font-size: 14px;
+    font-weight: bold;
 }
 </style>
 </head>
 
 <body>
 
-<h2>SAP Telecom Upload Generator</h2>
+<div class="container">
+    <h2>SAP Telecom Upload Generator (PDF + Excel)</h2>
+    
+    <div class="field-group">
+        <label for="invoiceListFile">1. Upload Invoice List Excel:</label>
+        <input type="file" id="invoiceListFile" accept=".xlsx, .xls">
+    </div>
 
-<p>Etisalat Excel:</p>
-<input type="file" id="etisalatFile">
+    <div class="field-group">
+        <label for="storeFile">2. Upload Store Master Excel:</label>
+        <input type="file" id="storeFile" accept=".xlsx, .xls">
+    </div>
 
-<p>Store Master:</p>
-<input type="file" id="storeFile">
+    <div class="field-group">
+        <label for="pdfFiles">3. Upload Bulk PDF Invoices (Select Hundreds):</label>
+        <input type="file" id="pdfFiles" accept=".pdf" multiple>
+    </div>
 
-<p>Posting Date:</p>
-<input type="date" id="postingDate">
+    <div class="field-group">
+        <label for="postingDate">4. SAP Posting Date:</label>
+        <input type="date" id="postingDate">
+    </div>
 
-<br>
+    <button id="generateBtn" onclick="processAllData()">
+        Process PDFs & Generate SAP Upload
+    </button>
 
-<button onclick="generateSAP()">
-Generate SAP Upload
-</button>
+    <div id="progressBox" class="progress-box">
+        <div id="statusText">Initializing...</div>
+        <div class="progress-bar-bg">
+            <div id="progressBar" class="progress-bar-fill"></div>
+        </div>
+    </div>
+</div>
 
 <script>
-
-function excelDateToJS(dateValue) {
-    if (typeof dateValue === "number") {
-        const date = XLSX.SSF.parse_date_code(dateValue);
-        return new Date(date.y, date.m - 1, date.d);
-    }
-    return new Date(dateValue);
-}
+// Configure PDF.js Worker
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
 function formatDateSAP(date) {
-    if (isNaN(date.getTime())) return "";
+    if (!date || isNaN(date.getTime())) return "";
     let d = String(date.getDate()).padStart(2, "0");
     let m = String(date.getMonth() + 1).padStart(2, "0");
     let y = date.getFullYear();
@@ -69,120 +152,212 @@ function formatDateSAP(date) {
 }
 
 function createCostCenter(storeCode) {
-    storeCode = String(storeCode);
+    storeCode = String(storeCode || "").trim();
     if (storeCode.length < 4) {
         storeCode = storeCode.padStart(4, "0");
     }
     return "AE" + storeCode + "610";
 }
 
-async function generateSAP() {
+// Extract full text from all pages of a PDF file
+async function extractTextFromPDF(file) {
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    let fullText = "";
+
+    for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        const pageText = textContent.items.map(item => item.str).join(" ");
+        fullText += " " + pageText;
+    }
+
+    return fullText;
+}
+
+// Regex patterns to parse extracted text from PDFs
+function parsePDFData(text) {
+    // 1. Extract Invoice / Bill Number
+    const billNoMatch = text.match(/(?:Bill\s*No|Invoice\s*No|Bill\s*Number|Account\s*No)[\.\s:]*([A-Z0-9\/-]{5,20})/i);
+    const billNo = billNoMatch ? billNoMatch[1].trim() : null;
+
+    // 2. Extract Bill Issue Date (supports e.g., 25/08/2024, 25-08-2024, 25 Aug 2024)
+    const dateMatch = text.match(/(?:Bill\s*Date|Issue\s*Date|Date\s*of\s*Issue)[\.\s:]*(\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4}|\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})/i);
+    let billDate = null;
+    if (dateMatch) {
+        billDate = new Date(dateMatch[1]);
+        if (isNaN(billDate.getTime())) billDate = null;
+    }
+
+    // 3. Extract Current Month Charges / Total Amount
+    const chargesMatch = text.match(/(?:Current\s*Month\s*Charges|Total\s*Current\s*Charges|Current\s*Charges|Total\s*Amount\s*Due)[\.\s:]*(?:AED)?\s*([\d,]+\.\d{2})/i);
+    let grossAmount = 0;
+    if (chargesMatch) {
+        grossAmount = parseFloat(chargesMatch[1].replace(/,/g, ""));
+    }
+
+    return { billNo, billDate, grossAmount };
+}
+
+async function processAllData() {
+    const invoiceListFile = document.getElementById("invoiceListFile").files[0];
+    const storeFile = document.getElementById("storeFile").files[0];
+    const pdfFiles = document.getElementById("pdfFiles").files;
+    const postingDateVal = document.getElementById("postingDate").value;
+
+    if (!invoiceListFile || !storeFile) {
+        alert("Please select both the Invoice List Excel and Store Master Excel.");
+        return;
+    }
+
+    if (pdfFiles.length === 0) {
+        alert("Please select PDF invoices to process.");
+        return;
+    }
+
+    if (!postingDateVal) {
+        alert("Please select a Posting Date.");
+        return;
+    }
+
+    const btn = document.getElementById("generateBtn");
+    const progressBox = document.getElementById("progressBox");
+    const statusText = document.getElementById("statusText");
+    const progressBar = document.getElementById("progressBar");
+
+    btn.disabled = true;
+    progressBox.style.display = "block";
+
     try {
-        const etisalatFile = document.getElementById("etisalatFile").files[0];
-        const storeFile = document.getElementById("storeFile").files[0];
-        const postingDate = document.getElementById("postingDate").value;
-
-        if (!etisalatFile || !storeFile) {
-            alert("Please upload both files");
-            return;
-        }
-
-        if (!postingDate) {
-            alert("Please select a posting date");
-            return;
-        }
-
-        const etBuffer = await etisalatFile.arrayBuffer();
+        // --- Step 1: Read Store Mapping Excel ---
+        statusText.innerText = "Reading Store Master Excel...";
         const stBuffer = await storeFile.arrayBuffer();
-
-        const etWB = XLSX.read(etBuffer, { type: "array" });
         const stWB = XLSX.read(stBuffer, { type: "array" });
-
-        // FIX 2: Sheet index fallback (uses Sheet 2 if available, otherwise Sheet 1)
-        const etSheetName = etWB.SheetNames[1] || etWB.SheetNames[0];
-        const stSheetName = stWB.SheetNames[0];
-
-        const etData = XLSX.utils.sheet_to_json(etWB.Sheets[etSheetName]);
-        const storeData = XLSX.utils.sheet_to_json(stWB.Sheets[stSheetName]);
+        const storeData = XLSX.utils.sheet_to_json(stWB.Sheets[stWB.SheetNames[0]]);
 
         let storeMap = {};
-
         storeData.forEach(r => {
-            if (r.Store) {
-                let storeName = String(r.Store)
-                    .replace(/^\d+\s+/, "")
-                    .trim()
-                    .toUpperCase();
-                storeMap[storeName] = r["Store Code"];
+            if (r.Store && r["Store Code"]) {
+                let cleanStoreName = String(r.Store).replace(/^\d+\s+/, "").trim().toUpperCase();
+                storeMap[cleanStoreName] = r["Store Code"];
             }
         });
 
-        let output = [];
+        // --- Step 2: Read Invoice List Excel ---
+        statusText.innerText = "Reading Invoice List Excel...";
+        const invBuffer = await invoiceListFile.arrayBuffer();
+        const invWB = XLSX.read(invBuffer, { type: "array" });
+        const invData = XLSX.utils.sheet_to_json(invWB.Sheets[invWB.SheetNames[0]]);
 
-        etData.forEach(row => {
-            let storeName = String(row.Store || "").trim().toUpperCase();
-            let billNo = row["Bill Number"];
-            let grossAmount = Number(row["Current Month Charges"] || 0);
-
-            if (!billNo || grossAmount === 0) return;
-
-            let netAmount = Number((grossAmount / 1.05).toFixed(2));
-            let storeCode = storeMap[storeName];
-            let costCenter = storeCode ? createCostCenter(storeCode) : "";
-
-            let billDate = excelDateToJS(row["Bill Date"]);
-            let posting = new Date(postingDate);
-
-            let monthText = billDate.toLocaleDateString('en-US', {
-                month: 'short',
-                year: '2-digit'
-            }).replace(" ", "-");
-
-            let itemText = `Telecom Voice ${monthText} Inv`;
-
-            output.push({
-                "Invoice ID": "",
-                "Company Code": "AE03",
-                "Transaction": 1,
-                "Invoicing Party": "2000004275",
-                "Reference": billNo,
-                "Document Date": formatDateSAP(billDate),
-                "Posting Date": formatDateSAP(posting),
-                "Document Type": "KR",
-                "Document Header Text": itemText,
-                "Currency": "AED",
-                "Gross Invoice Amount": grossAmount.toFixed(2),
-                "Business Place": "DXB",
-                "Payment Method": "W",
-                "Invoice Receipt Date": formatDateSAP(posting),
-                "Account": "6117151004",
-                "Item Text": itemText,
-                "Debit Credit": "S",
-                "Amount in Document Currency": netAmount.toFixed(2),
-                "Tax Code": "IT",
-                "Cost Center": costCenter,
-                "Profit Center": "100005"
-            });
+        // Create map of required invoice numbers and associated store names
+        let requiredInvoices = {};
+        invData.forEach(row => {
+            let invNo = row["Bill Number"] || row["Invoice Number"] || row["Bill No"];
+            if (invNo) {
+                let cleanInv = String(invNo).trim();
+                requiredInvoices[cleanInv] = {
+                    storeName: String(row["Store"] || "").trim().toUpperCase()
+                };
+            }
         });
 
+        // --- Step 3: Extract Data from Hundreds of PDFs ---
+        let pdfExtractedData = {};
+        const totalPDFs = pdfFiles.length;
+
+        for (let i = 0; i < totalPDFs; i++) {
+            const file = pdfFiles[i];
+            
+            // Update UI Progress
+            const percent = Math.round(((i + 1) / totalPDFs) * 100);
+            statusText.innerText = `Parsing PDF (${i + 1} of ${totalPDFs}): ${file.name}`;
+            progressBar.style.width = percent + "%";
+
+            try {
+                const text = await extractTextFromPDF(file);
+                const parsed = parsePDFData(text);
+
+                if (parsed.billNo) {
+                    pdfExtractedData[parsed.billNo] = parsed;
+                }
+            } catch (err) {
+                console.warn(`Failed to process PDF ${file.name}:`, err);
+            }
+        }
+
+        // --- Step 4: Match & Generate SAP Records ---
+        statusText.innerText = "Building SAP Upload File...";
+        let output = [];
+        let posting = new Date(postingDateVal);
+
+        for (let billNo in requiredInvoices) {
+            const pdfData = pdfExtractedData[billNo];
+
+            // Filter: Only process if the PDF was found and extracted
+            if (pdfData && pdfData.grossAmount > 0) {
+                const grossAmount = pdfData.grossAmount;
+                const netAmount = Number((grossAmount / 1.05).toFixed(2)); // VAT-exclusive amount (5%)
+                
+                const storeName = requiredInvoices[billNo].storeName;
+                const storeCode = storeMap[storeName];
+                const costCenter = storeCode ? createCostCenter(storeCode) : "";
+
+                const billDate = pdfData.billDate || posting;
+                const monthText = billDate.toLocaleDateString('en-US', {
+                    month: 'short',
+                    year: '2-digit'
+                }).replace(" ", "-");
+
+                const itemText = `Telecom Voice ${monthText} Inv`;
+
+                output.push({
+                    "Invoice ID": "",
+                    "Company Code": "AE03",
+                    "Transaction": 1,
+                    "Invoicing Party": "2000004275",
+                    "Reference": billNo,
+                    "Document Date": formatDateSAP(billDate),
+                    "Posting Date": formatDateSAP(posting),
+                    "Document Type": "KR",
+                    "Document Header Text": itemText,
+                    "Currency": "AED",
+                    "Gross Invoice Amount": grossAmount.toFixed(2),
+                    "Business Place": "DXB",
+                    "Payment Method": "W",
+                    "Invoice Receipt Date": formatDateSAP(posting),
+                    "Account": "6117151004",
+                    "Item Text": itemText,
+                    "Debit Credit": "S",
+                    "Amount in Document Currency": netAmount.toFixed(2),
+                    "Tax Code": "IT",
+                    "Cost Center": costCenter,
+                    "Profit Center": "100005"
+                });
+            }
+        }
+
         if (output.length === 0) {
-            alert("No matching rows found. Please check your column names in the Excel file.");
+            alert("No matching invoices were extracted from the uploaded PDFs. Please check if PDF invoice numbers match the Excel list.");
+            btn.disabled = false;
             return;
         }
 
+        // --- Step 5: Export to SAP_Upload.xlsx ---
         const ws = XLSX.utils.json_to_sheet(output);
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, "SAP Upload");
         XLSX.writeFile(wb, "SAP_Upload.xlsx");
 
-        alert(`Done! Generated ${output.length} rows`);
+        statusText.innerText = `Done! Successfully generated ${output.length} matching rows.`;
+        alert(`Success! Generated SAP Upload file with ${output.length} matched rows.`);
 
     } catch (error) {
         console.error(error);
-        alert("An error occurred: " + error.message);
+        alert("An error occurred during execution: " + error.message);
+    } finally {
+        btn.disabled = false;
     }
 }
-
 </script>
 
 </body>
