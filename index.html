@@ -1,296 +1,172 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
 <meta charset="UTF-8">
-<title>SAP Telecom Upload Generator (Ultra Fast)</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<title>Ultra-Fast Invoice Extractor</title>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 
 <style>
-body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 40px; background: #f8f9fa; color: #333; }
-.container { max-width: 800px; margin: 0 auto; background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
-h2 { color: #0078d4; margin-top: 0; }
-.field-group { margin-bottom: 20px; }
-label { display: block; font-weight: bold; margin-bottom: 6px; }
-input[type="file"], input[type="date"] { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
-button { background: #0078d4; color: white; font-size: 16px; font-weight: bold; padding: 12px 24px; border: none; border-radius: 4px; cursor: pointer; width: 100%; margin-top: 10px; }
-button:hover { background: #005ea6; }
-button:disabled { background: #ccc; cursor: not-allowed; }
-.progress-box { margin-top: 20px; padding: 15px; border-radius: 4px; background: #e9ecef; display: none; }
-.progress-bar-bg { height: 12px; background: #ced4da; border-radius: 6px; overflow: hidden; margin-top: 8px; }
-.progress-bar-fill { height: 100%; background: #28a745; width: 0%; transition: width 0.1s; }
-#statusText { font-size: 14px; font-weight: bold; }
+body {
+  font-family: Arial, sans-serif;
+  margin: 20px;
+}
+.controls {
+  margin-bottom: 20px;
+}
+textarea {
+  width: 100%;
+  max-width: 500px;
+  height: 120px;
+  padding: 8px;
+  font-family: monospace;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-top: 15px;
+}
+th, td {
+  border: 1px solid #ccc;
+  padding: 8px;
+  text-align: left;
+}
+th {
+  background-color: #f4f4f4;
+}
+.progress {
+  font-weight: bold;
+  color: #28a745;
+  margin-top: 5px;
+}
 </style>
 </head>
 
 <body>
 
-<div class="container">
-    <h2>SAP Telecom Upload Generator (Ultra-Fast Engine)</h2>
-    
-    <div class="field-group">
-        <label for="invoiceListFile">1. Upload Invoice List Excel:</label>
-        <input type="file" id="invoiceListFile" accept=".xlsx, .xls">
-    </div>
+<h2>Ultra-Fast Invoice Extractor</h2>
 
-    <div class="field-group">
-        <label for="storeFile">2. Upload Store Master Excel:</label>
-        <input type="file" id="storeFile" accept=".xlsx, .xls">
-    </div>
-
-    <div class="field-group">
-        <label for="pdfFiles">3. Upload Bulk PDF Invoices (Select Hundreds/Thousands):</label>
-        <input type="file" id="pdfFiles" accept=".pdf" multiple>
-    </div>
-
-    <div class="field-group">
-        <label for="postingDate">4. SAP Posting Date:</label>
-        <input type="date" id="postingDate">
-    </div>
-
-    <button id="generateBtn" onclick="processAllData()">
-        Process PDFs & Generate SAP Upload
-    </button>
-
-    <div id="progressBox" class="progress-box">
-        <div id="statusText">Initializing...</div>
-        <div class="progress-bar-bg">
-            <div id="progressBar" class="progress-bar-fill"></div>
-        </div>
-    </div>
+<div class="controls">
+  <label for="invoiceList"><strong>Enter Required Bill/Invoice Numbers:</strong></label><br>
+  <textarea id="invoiceList" placeholder="e.g.&#10;2037955774&#10;INV2037955774"></textarea><br><br>
+  
+  <input type="file" id="pdfFiles" multiple accept=".pdf">
+  <button id="extractBtn" onclick="extractInvoices()">Extract Data</button>
+  <div id="statusText" class="progress"></div>
 </div>
 
+<table>
+<thead>
+<tr>
+<th>Bill Number</th>
+<th>Bill Issue Date</th>
+<th>Current Month Charges</th>
+<th>Status / Source File</th>
+</tr>
+</thead>
+<tbody id="results"></tbody>
+</table>
+
 <script>
-pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+pdfjsLib.GlobalWorkerOptions.workerSrc = 
+'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
-function formatDateSAP(date) {
-    if (!date || isNaN(date.getTime())) return "";
-    let d = String(date.getDate()).padStart(2, "0");
-    let m = String(date.getMonth() + 1).padStart(2, "0");
-    let y = date.getFullYear();
-    return `${m}/${d}/${y}`;
-}
+async function readPdfFirstPage(file){
+  try {
+    const pdf = await pdfjsLib.getDocument({
+      data: await file.arrayBuffer()
+    }).promise;
 
-function createCostCenter(storeCode) {
-    storeCode = String(storeCode || "").trim();
-    if (storeCode.length < 4) storeCode = storeCode.padStart(4, "0");
-    return "AE" + storeCode + "610";
-}
-
-// FAST PDF TEXT EXTRACTOR (Page 1 Only + Memory Cleanup)
-async function extractPage1Text(file) {
-    const arrayBuffer = await file.arrayBuffer();
-    const loadingTask = pdfjsLib.getDocument({
-        data: arrayBuffer,
-        disableFontFace: true,
-        disableRange: true,
-        disableStream: true,
-        verbosity: 0
-    });
-
-    const pdf = await loadingTask.promise;
-    const page = await pdf.getPage(1); // Only scan Page 1
-    const textContent = await page.getTextContent();
-    const text = textContent.items.map(item => item.str).join(" ");
+    const page = await pdf.getPage(1);
+    const content = await page.getTextContent();
     
-    // Immediately destroy PDF instance to free RAM
-    pdf.destroy();
-    return text;
+    // Preserve layout order closely by joining with spaces
+    return content.items.map(x => x.str).join(" ");
+  } catch (err) {
+    return "";
+  }
 }
 
-function parsePDFData(text) {
-    const billNoMatch = text.match(/(?:Bill\s*No|Invoice\s*No|Bill\s*Number|Account\s*No)[\.\s:]*([A-Z0-9\/-]{5,20})/i);
-    const billNo = billNoMatch ? billNoMatch[1].trim() : null;
+async function extractInvoices(){
+  const fileInput = document.getElementById('pdfFiles');
+  const files = Array.from(fileInput.files);
+  const results = document.getElementById('results');
+  const statusText = document.getElementById('statusText');
+  const rawInput = document.getElementById('invoiceList').value;
+  const btn = document.getElementById('extractBtn');
 
-    const dateMatch = text.match(/(?:Bill\s*Date|Issue\s*Date|Date\s*of\s*Issue)[\.\s:]*(\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4}|\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})/i);
-    let billDate = null;
-    if (dateMatch) {
-        billDate = new Date(dateMatch[1]);
-        if (isNaN(billDate.getTime())) billDate = null;
+  const targetInvoices = rawInput
+    .split(/[\n,\s]+/)
+    .map(inv => inv.trim())
+    .filter(inv => inv.length > 0);
+
+  if (targetInvoices.length === 0) {
+    alert("Please enter at least one invoice number.");
+    return;
+  }
+
+  if (files.length === 0) {
+    alert("Please upload your PDF files.");
+    return;
+  }
+
+  btn.disabled = true;
+  results.innerHTML = '';
+  statusText.innerText = `Indexing ${files.length} filenames...`;
+
+  // Pre-index files for fast lookup
+  const fileMap = new Map();
+  for (const file of files) {
+    fileMap.set(file.name.toLowerCase(), file);
+  }
+
+  statusText.innerText = `Extracting requested data...`;
+
+  for (const targetInv of targetInvoices) {
+    const cleanNum = targetInv.replace(/^[A-Za-z]+/, ''); // Strips "INV" if needed
+    
+    let matchedFile = null;
+    for (const [fileName, fileObj] of fileMap.entries()) {
+      if (fileName.includes(targetInv.toLowerCase()) || fileName.includes(cleanNum.toLowerCase())) {
+        matchedFile = fileObj;
+        break;
+      }
     }
 
-    const chargesMatch = text.match(/(?:Current\s*Month\s*Charges|Total\s*Current\s*Charges|Current\s*Charges|Total\s*Amount\s*Due)[\.\s:]*(?:AED)?\s*([\d,]+\.\d{2})/i);
-    let grossAmount = 0;
-    if (chargesMatch) {
-        grossAmount = parseFloat(chargesMatch[1].replace(/,/g, ""));
+    if (matchedFile) {
+      const text = await readPdfFirstPage(matchedFile);
+
+      // Improved Robust Matchers:
+      // 1. Bill Issue Date (e.g. 01 Jul 2026 or 01-07-2026)
+      const dateMatch = text.match(/Bill\s*Issue\s*Date\s*[:|]?\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{2}[\/\-]\d{2}[\/\-]\d{4})/i);
+
+      // 2. Amount: Matches "Current month charges" followed by any characters until a decimal currency amount
+      const amountMatch = text.match(/Current\s*month\s*charges[\s\S]*?([\d,]+\.\d{2})/i) 
+                       || text.match(/TAXINVOICE[\s\S]*?([\d,]+\.\d{2})\s*AED/i);
+
+      const date = dateMatch ? dateMatch[1] : 'Not Found';
+      const amount = amountMatch ? amountMatch[1] : 'Not Found';
+
+      results.innerHTML += `
+      <tr>
+        <td><strong>${targetInv}</strong></td>
+        <td>${date}</td>
+        <td>${amount}</td>
+        <td>${matchedFile.name}</td>
+      </tr>`;
+    } else {
+      results.innerHTML += `
+      <tr style="color: red;">
+        <td><strong>${targetInv}</strong></td>
+        <td>N/A</td>
+        <td>N/A</td>
+        <td>File not found in selection</td>
+      </tr>`;
     }
+  }
 
-    return { billNo, billDate, grossAmount };
-}
-
-async function processAllData() {
-    const invoiceListFile = document.getElementById("invoiceListFile").files[0];
-    const storeFile = document.getElementById("storeFile").files[0];
-    const pdfFiles = Array.from(document.getElementById("pdfFiles").files);
-    const postingDateVal = document.getElementById("postingDate").value;
-
-    if (!invoiceListFile || !storeFile || pdfFiles.length === 0 || !postingDateVal) {
-        alert("Please select all files and fill in the posting date.");
-        return;
-    }
-
-    const btn = document.getElementById("generateBtn");
-    const progressBox = document.getElementById("progressBox");
-    const statusText = document.getElementById("statusText");
-    const progressBar = document.getElementById("progressBar");
-
-    btn.disabled = true;
-    progressBox.style.display = "block";
-
-    try {
-        // --- 1. Read Store Master ---
-        statusText.innerText = "Reading Store Master Excel...";
-        const stBuffer = await storeFile.arrayBuffer();
-        const stWB = XLSX.read(stBuffer, { type: "array" });
-        const storeData = XLSX.utils.sheet_to_json(stWB.Sheets[stWB.SheetNames[0]]);
-
-        let storeMap = {};
-        storeData.forEach(r => {
-            if (r.Store && r["Store Code"]) {
-                let cleanStoreName = String(r.Store).replace(/^\d+\s+/, "").trim().toUpperCase();
-                storeMap[cleanStoreName] = r["Store Code"];
-            }
-        });
-
-        // --- 2. Read Invoice Target List ---
-        statusText.innerText = "Reading Invoice Target List...";
-        const invBuffer = await invoiceListFile.arrayBuffer();
-        const invWB = XLSX.read(invBuffer, { type: "array" });
-        const invData = XLSX.utils.sheet_to_json(invWB.Sheets[invWB.SheetNames[0]]);
-
-        let requiredInvoices = {};
-        let targetBillNumbers = new Set();
-
-        invData.forEach(row => {
-            let invNo = row["Bill Number"] || row["Invoice Number"] || row["Bill No"];
-            if (invNo) {
-                let cleanInv = String(invNo).trim();
-                requiredInvoices[cleanInv] = {
-                    storeName: String(row["Store"] || "").trim().toUpperCase()
-                };
-                targetBillNumbers.add(cleanInv);
-            }
-        });
-
-        // --- 3. Parallel PDF Extraction ---
-        let pdfExtractedData = {};
-        const totalPDFs = pdfFiles.length;
-        let processedCount = 0;
-
-        // Concurrent Worker Pool Size based on CPU core availability
-        const MAX_PARALLEL = Math.min(navigator.hardwareConcurrency || 8, 16); 
-        
-        async function worker(file) {
-            try {
-                // Filename Fast Match Check
-                const fileNameUpper = file.name.toUpperCase();
-                let matchingBillNo = null;
-
-                for (let billNo of targetBillNumbers) {
-                    if (fileNameUpper.includes(billNo.toUpperCase())) {
-                        matchingBillNo = billNo;
-                        break;
-                    }
-                }
-
-                // Scan PDF contents
-                const text = await extractPage1Text(file);
-                const parsed = parsePDFData(text);
-
-                const billNo = parsed.billNo || matchingBillNo;
-                if (billNo && targetBillNumbers.has(billNo)) {
-                    pdfExtractedData[billNo] = parsed;
-                }
-            } catch (e) {
-                console.warn(`Error parsing file ${file.name}`);
-            } finally {
-                processedCount++;
-                if (processedCount % 10 === 0 || processedCount === totalPDFs) {
-                    const percent = Math.round((processedCount / totalPDFs) * 100);
-                    statusText.innerText = `Fast-Scanning PDFs: ${processedCount} / ${totalPDFs} (${percent}%)`;
-                    progressBar.style.width = percent + "%";
-                }
-            }
-        }
-
-        // Process files in parallel pools
-        for (let i = 0; i < totalPDFs; i += MAX_PARALLEL) {
-            const batch = pdfFiles.slice(i, i + MAX_PARALLEL);
-            await Promise.all(batch.map(file => worker(file)));
-            await new Promise(r => setTimeout(r, 0)); // Yield CPU to keep UI responsive
-        }
-
-        // --- 4. Build Output Data ---
-        statusText.innerText = "Generating SAP Upload Excel...";
-        let output = [];
-        let posting = new Date(postingDateVal);
-
-        for (let billNo in requiredInvoices) {
-            const pdfData = pdfExtractedData[billNo];
-
-            if (pdfData && pdfData.grossAmount > 0) {
-                const grossAmount = pdfData.grossAmount;
-                const netAmount = Number((grossAmount / 1.05).toFixed(2));
-                
-                const storeName = requiredInvoices[billNo].storeName;
-                const storeCode = storeMap[storeName];
-                const costCenter = storeCode ? createCostCenter(storeCode) : "";
-
-                const billDate = pdfData.billDate || posting;
-                const monthText = billDate.toLocaleDateString('en-US', {
-                    month: 'short',
-                    year: '2-digit'
-                }).replace(" ", "-");
-
-                const itemText = `Telecom Voice ${monthText} Inv`;
-
-                output.push({
-                    "Invoice ID": "",
-                    "Company Code": "AE03",
-                    "Transaction": 1,
-                    "Invoicing Party": "2000004275",
-                    "Reference": billNo,
-                    "Document Date": formatDateSAP(billDate),
-                    "Posting Date": formatDateSAP(posting),
-                    "Document Type": "KR",
-                    "Document Header Text": itemText,
-                    "Currency": "AED",
-                    "Gross Invoice Amount": grossAmount.toFixed(2),
-                    "Business Place": "DXB",
-                    "Payment Method": "W",
-                    "Invoice Receipt Date": formatDateSAP(posting),
-                    "Account": "6117151004",
-                    "Item Text": itemText,
-                    "Debit Credit": "S",
-                    "Amount in Document Currency": netAmount.toFixed(2),
-                    "Tax Code": "IT",
-                    "Cost Center": costCenter,
-                    "Profit Center": "100005"
-                });
-            }
-        }
-
-        if (output.length === 0) {
-            alert("No matching invoice numbers found inside the PDFs. Please verify the bill numbers match your Excel list.");
-            btn.disabled = false;
-            return;
-        }
-
-        // --- 5. Export File ---
-        const ws = XLSX.utils.json_to_sheet(output);
-        const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, "SAP Upload");
-        XLSX.writeFile(wb, "SAP_Upload.xlsx");
-
-        statusText.innerText = `Finished! Successfully exported ${output.length} rows.`;
-        alert(`Success! File downloaded with ${output.length} records.`);
-
-    } catch (err) {
-        console.error(err);
-        alert("Execution Error: " + err.message);
-    } finally {
-        btn.disabled = false;
-    }
+  statusText.innerText = `Done!`;
+  btn.disabled = false;
 }
 </script>
 
